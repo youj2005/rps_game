@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <openssl/sha.h>
+#include <fstream>
 
 using std::cout;
 using std::vector;
@@ -29,7 +30,7 @@ Server::~Server()
 {
 }
 
-void Server::handle_client(int sockfd, struct sockaddr_in client_addr, char* buffer, int len) {
+void Server::handleClient(int sockfd, struct sockaddr_in client_addr, char* buffer, int len) {
     char client_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
     int client_port = ntohs(client_addr.sin_port);
@@ -39,26 +40,55 @@ void Server::handle_client(int sockfd, struct sockaddr_in client_addr, char* buf
 
     unsigned char* hashBuffer = SHA256((unsigned char*) buffer, strlen(buffer), nullptr);
     char* ptr = buffer;
-    uint8_t version = *(uint8_t*) ptr;
+    uint8_t command = *(uint8_t*) ptr;
     ptr += sizeof(uint8_t) + sizeof(char);
-    uint8_t difficulty = *(uint8_t*) ptr;
-    ptr += sizeof(uint8_t) + sizeof(char); 
+    if (command == 0)
+    {
+        uint8_t difficulty = *(uint8_t*) ptr;
+        ptr += sizeof(uint8_t) + sizeof(char); 
 
-    const char* response;
-    if (isDifficulty(hashBuffer, difficulty))
-    {
-        response = "ACK";
-        move makeMove = *(move*) ptr;
-        printf("%d\n", makeMove);
-        move currMove = m_RPSD->play(makeMove);
-        printf("%d\n", currMove);
-    } else
-    {
-        response = "NACK";
+        const char* response;
+        if (isDifficulty(hashBuffer, difficulty))
+        {
+            response = "ACK";
+            move makeMove = *(move*) ptr;
+            printf("%d\n", makeMove);
+            move currMove = m_RPSD->play(makeMove);
+            printf("%d\n", currMove);
+        } else
+        {
+            response = "NACK";
+        }
+        sendto(sockfd, response, strlen(response), 0, (struct sockaddr*)&client_addr, sizeof(client_addr));
+        
+        std::cout << "Response sent to " << client_ip << ":" << client_port << "\n";
     }
-    sendto(sockfd, response, strlen(response), 0, (struct sockaddr*)&client_addr, sizeof(client_addr));
-    
-    std::cout << "Response sent to " << client_ip << ":" << client_port << "\n";
+    if (command == 1)
+    {
+        client_ip[INET_ADDRSTRLEN] = '\0';
+        std::string ip(client_ip);
+        if (!balances.count(ip))
+        {
+            balanceMtx.lock();
+            balances[ip] = 1000;
+            balanceMtx.unlock();
+        }
+        uint32_t amount = *(uint32_t*) ptr;
+        ptr += sizeof(uint32_t) + sizeof(char);
+        if (amount > balances[ip])
+        {
+            sendto(sockfd, "NACK", strlen("NACK"), 0, (struct sockaddr*)&client_addr, sizeof(client_addr));
+        } else
+        {
+            balanceMtx.lock();
+            balances[ip] -= amount;
+            balanceMtx.unlock();
+            betMtx.lock();
+            bets[ip] = pair<move, uint16_t>(*(move*) ptr, amount);
+            betMtx.unlock();
+            sendto(sockfd, "ACK", strlen("ACK"), 0, (struct sockaddr*)&client_addr, sizeof(client_addr));
+        }
+    }
 }
 
 bool Server::startServer()
@@ -92,7 +122,7 @@ bool Server::startServer()
         buffer[n] = '\0';
         cout << "Received: " << buffer << endl;
 
-        threads.emplace_back(std::thread(&Server::handle_client, this, m_Socket, clientAddress, buffer, n));
+        threads.emplace_back(std::thread(&Server::handleClient, this, m_Socket, clientAddress, buffer, n));
 
         for (vector<std::thread>::iterator it = threads.begin(); it != threads.end(); ) {
             if (it->joinable()) {

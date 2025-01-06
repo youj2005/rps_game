@@ -18,7 +18,7 @@ namespace rpsd
             move play(move sel);
             move read();
         private:
-            std::mutex mtx;
+            static std::mutex mtx;
             move m_Val;
     };
 }
